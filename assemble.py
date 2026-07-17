@@ -137,6 +137,30 @@ def assemble_content_json(attachments: list[dict], prompt_text: str) -> str:
     return json_str
 
 
+def classify_with_claude(attachments: list[dict], prompt_text: str, api_key: str) -> str:
+    """
+    Does the FULL job: assembles the content blocks, calls Anthropic directly,
+    and returns just the classification text (e.g. "PARTIAL: Bank statements received").
+
+    This replaces the fragile second HTTP call that Make kept failing to build
+    correctly - the whole Anthropic API call now happens here, in code, where
+    it can be tested and verified directly.
+    """
+    import anthropic
+
+    content_blocks = assemble_content(attachments, prompt_text)
+
+    client = anthropic.Anthropic(api_key=api_key)
+    response = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=300,
+        messages=[{"role": "user", "content": content_blocks}]
+    )
+
+    # Extract just the text - this is what Make will receive, clean and ready
+    return response.content[0].text
+
+
 if __name__ == "__main__":
     # Quick self-test with real base64 image data
     with open("test1.png", "rb") as f:
