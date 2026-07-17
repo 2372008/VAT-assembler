@@ -16,7 +16,57 @@ Output: a Python list matching Claude's expected content-block format:
 """
 
 import base64
+import io
 import json
+
+from PIL import Image
+
+# Anthropic's recommended max dimension for token-efficient image processing.
+# Images larger than this get resized down; smaller images are left alone.
+MAX_DIMENSION = 1568
+
+
+def resize_image_if_needed(data: str, mime_type: str) -> str:
+    """
+    Takes a base64-encoded image. If it's larger than MAX_DIMENSION on its
+    longest side, resizes it down and re-compresses as JPEG to cut token
+    usage dramatically. Returns a (possibly new) base64 string.
+
+    If the image is already small enough, returns the original data untouched
+    - no need to re-compress and lose quality for images that are already fine.
+    """
+    try:
+        raw_bytes = base64.b64decode(data)
+        img = Image.open(io.BytesIO(raw_bytes))
+
+        width, height = img.size
+        longest_side = max(width, height)
+
+        if longest_side <= MAX_DIMENSION:
+            # Already small enough - don't touch it
+            return data
+
+        # Resize keeping aspect ratio
+        scale = MAX_DIMENSION / longest_side
+        new_size = (int(width * scale), int(height * scale))
+        img = img.resize(new_size, Image.LANCZOS)
+
+        # Convert to RGB if needed (handles PNGs with alpha, CMYK, etc.)
+        if img.mode not in ("RGB", "L"):
+            img = img.convert("RGB")
+
+        buffer = io.BytesIO()
+        img.save(buffer, format="JPEG", quality=85)
+        resized_bytes = buffer.getvalue()
+
+        return base64.b64encode(resized_bytes).decode("utf-8")
+
+    except Exception as e:
+        # If resizing fails for any reason, fall back to original data
+        # rather than breaking the whole request - better to try the
+        # original (even if it might hit a token limit) than fail outright.
+        print(f"Warning: image resize failed, using original. Error: {e}")
+        return data
 
 
 def assemble_content(attachments: list[dict], prompt_text: str) -> list[dict]:
@@ -49,12 +99,21 @@ def assemble_content(attachments: list[dict], prompt_text: str) -> list[dict]:
                 f"check for double-encoding. Error: {e}"
             )
 
+        # Resize large images down to keep token usage reasonable.
+        # This may also change the effective mime type to JPEG if resized.
+        resized_data = resize_image_if_needed(data, mime_type)
+        if resized_data != data:
+            # Image was actually resized/recompressed -> now it's a JPEG
+            effective_mime_type = "image/jpeg"
+        else:
+            effective_mime_type = mime_type
+
         content_blocks.append({
             "type": "image",
             "source": {
                 "type": "base64",
-                "media_type": mime_type,
-                "data": data
+                "media_type": effective_mime_type,
+                "data": resized_data
             }
         })
 
