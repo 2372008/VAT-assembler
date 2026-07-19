@@ -99,23 +99,41 @@ def assemble_content(attachments: list[dict], prompt_text: str) -> list[dict]:
                 f"check for double-encoding. Error: {e}"
             )
 
-        # Resize large images down to keep token usage reasonable.
-        # This may also change the effective mime type to JPEG if resized.
-        resized_data = resize_image_if_needed(data, mime_type)
-        if resized_data != data:
-            # Image was actually resized/recompressed -> now it's a JPEG
-            effective_mime_type = "image/jpeg"
-        else:
-            effective_mime_type = mime_type
+        if mime_type == "application/pdf":
+            # PDFs use a different block type entirely - Claude reads them
+            # as documents (all pages), not images. No resizing needed here;
+            # Anthropic handles PDF page rendering internally.
+            content_blocks.append({
+                "type": "document",
+                "source": {
+                    "type": "base64",
+                    "media_type": "application/pdf",
+                    "data": data
+                }
+            })
+        elif mime_type.startswith("image/"):
+            # Resize large images down to keep token usage reasonable.
+            # This may also change the effective mime type to JPEG if resized.
+            resized_data = resize_image_if_needed(data, mime_type)
+            if resized_data != data:
+                # Image was actually resized/recompressed -> now it's a JPEG
+                effective_mime_type = "image/jpeg"
+            else:
+                effective_mime_type = mime_type
 
-        content_blocks.append({
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": effective_mime_type,
-                "data": resized_data
-            }
-        })
+            content_blocks.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": effective_mime_type,
+                    "data": resized_data
+                }
+            })
+        else:
+            raise ValueError(
+                f"Attachment {i} has unsupported mime_type '{mime_type}' - "
+                f"only images (image/*) and PDFs (application/pdf) are supported"
+            )
 
     # Final text block with the prompt
     content_blocks.append({
@@ -145,10 +163,24 @@ def classify_with_claude(attachments: list[dict], prompt_text: str, api_key: str
     This replaces the fragile second HTTP call that Make kept failing to build
     correctly - the whole Anthropic API call now happens here, in code, where
     it can be tested and verified directly.
+
+    Automatically injects today's real date into the prompt, since Claude has
+    no reliable way to know the current date on its own - without this, it
+    can't judge whether a document's date is stale, wrong, or suspicious.
     """
     import anthropic
+    from datetime import datetime
 
-    content_blocks = assemble_content(attachments, prompt_text)
+    today_str = datetime.now().strftime("%d %B %Y")
+    dated_prompt = (
+        f"Today's actual date is {today_str}. Use this to judge whether any "
+        f"dates visible in the attached document(s) are current/reasonable, "
+        f"or clearly outdated, expired, or otherwise suspicious (e.g. a "
+        f"document dated years ago, or dated in the future).\n\n"
+        f"{prompt_text}"
+    )
+
+    content_blocks = assemble_content(attachments, dated_prompt)
 
     client = anthropic.Anthropic(api_key=api_key)
     response = client.messages.create(
