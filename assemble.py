@@ -155,10 +155,54 @@ def assemble_content_json(attachments: list[dict], prompt_text: str) -> str:
     return json_str
 
 
-def classify_with_claude(attachments: list[dict], prompt_text: str, api_key: str) -> str:
+def extract_missing_items(result_text: str) -> list[str]:
+    """
+    Pulls the comma-separated list out of a 'Missing: X, Y, Z' segment in the
+    classification text, e.g. from "PARTIAL: Bank statements received.
+    Missing: Utility bills, Income information".
+
+    Returns an empty list if no "Missing:" segment is present (e.g. for a
+    CONFIRMED result where nothing is outstanding).
+
+    This is deliberately simple text parsing rather than asking Claude for
+    JSON - the prompt already reliably produces this "Missing: ..." format,
+    so there's no need to change the prompt or add a second API call.
+    """
+    if not result_text:
+        return []
+
+    lower = result_text.lower()
+    marker = "missing:"
+    idx = lower.find(marker)
+    if idx == -1:
+        return []
+
+    # Take everything after "Missing:" up to the end of that sentence
+    # (stop at a period followed by a space/end, so we don't swallow
+    # trailing unrelated sentences if the model adds any).
+    after = result_text[idx + len(marker):]
+    end = after.find(". ")
+    if end == -1:
+        # No trailing sentence - could still end with a lone "."
+        segment = after.rstrip().rstrip(".")
+    else:
+        segment = after[:end]
+
+    items = [item.strip().rstrip(".") for item in segment.split(",")]
+    items = [item for item in items if item]  # drop empty strings
+
+    return items
+
+
+def classify_with_claude(attachments: list[dict], prompt_text: str, api_key: str) -> dict:
     """
     Does the FULL job: assembles the content blocks, calls Anthropic directly,
-    and returns just the classification text (e.g. "PARTIAL: Bank statements received").
+    and returns a dict with the classification text AND a parsed list of
+    missing items, e.g.:
+        {
+            "result": "PARTIAL: Bank statements received. Missing: Utility bills",
+            "missing": ["Utility bills"]
+        }
 
     This replaces the fragile second HTTP call that Make kept failing to build
     correctly - the whole Anthropic API call now happens here, in code, where
@@ -190,7 +234,10 @@ def classify_with_claude(attachments: list[dict], prompt_text: str, api_key: str
     )
 
     # Extract just the text - this is what Make will receive, clean and ready
-    return response.content[0].text
+    result_text = response.content[0].text
+    missing_items = extract_missing_items(result_text)
+
+    return {"result": result_text, "missing": missing_items}
 
 
 if __name__ == "__main__":
