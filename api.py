@@ -65,7 +65,11 @@ def classify(req: ClassifyRequest):
     try:
         attachments_as_dicts = [a.model_dump() for a in req.attachments]
         classification = classify_with_claude(attachments_as_dicts, req.prompt_text, api_key)
-        return {"result": classification["result"], "missing": classification["missing"]}
+        return {
+            "result": classification["result"],
+            "missing": classification["missing"],
+            "outdated": classification["outdated"],
+        }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

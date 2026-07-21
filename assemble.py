@@ -194,14 +194,55 @@ def extract_missing_items(result_text: str) -> list[str]:
     return items
 
 
+def extract_outdated_items(result_text: str) -> list[str]:
+    """
+    Pulls the comma-separated list out of an 'Outdated (please resubmit): X (dated ...), Y (dated ...)'
+    segment, e.g. from "Received: none. Missing: Bank statements, Utility bills. Outdated
+    (please resubmit): Utility bills (dated 10-13 Jul 2025)".
+
+    Returns an empty list if no "Outdated" segment is present - most results won't have one.
+
+    Same simple text-parsing approach as extract_missing_items - no prompt or API changes
+    needed, since the prompt already reliably produces this "Outdated (please resubmit): ..."
+    format when format 7 applies.
+    """
+    if not result_text:
+        return []
+
+    marker = "outdated (please resubmit):"
+    lower = result_text.lower()
+    idx = lower.find(marker)
+    if idx == -1:
+        return []
+
+    after = result_text[idx + len(marker):].strip()
+
+    # This segment includes "(dated ...)" inside each item, and commas can appear
+    # both between items AND inside a date range (e.g. "10-13 Jul 2025"), so we
+    # can't naively split on every comma. Instead split on the boundary right
+    # after each closing parenthesis followed by a comma.
+    import re
+    raw_items = re.split(r'\)\s*,\s*', after)
+    items = []
+    for i, item in enumerate(raw_items):
+        item = item.strip().rstrip(".")
+        if item and not item.endswith(")"):
+            item += ")"
+        if item:
+            items.append(item)
+
+    return items
+
+
 def classify_with_claude(attachments: list[dict], prompt_text: str, api_key: str) -> dict:
     """
     Does the FULL job: assembles the content blocks, calls Anthropic directly,
-    and returns a dict with the classification text AND a parsed list of
-    missing items, e.g.:
+    and returns a dict with the classification text, a parsed list of missing
+    items, and a parsed list of any outdated items, e.g.:
         {
-            "result": "PARTIAL: Bank statements received. Missing: Utility bills",
-            "missing": ["Utility bills"]
+            "result": "Received: none. Missing: Bank statements, Utility bills. Outdated (please resubmit): Utility bills (dated 10-13 Jul 2025)",
+            "missing": ["Bank statements", "Utility bills"],
+            "outdated": ["Utility bills (dated 10-13 Jul 2025)"]
         }
 
     This replaces the fragile second HTTP call that Make kept failing to build
@@ -236,8 +277,9 @@ def classify_with_claude(attachments: list[dict], prompt_text: str, api_key: str
     # Extract just the text - this is what Make will receive, clean and ready
     result_text = response.content[0].text
     missing_items = extract_missing_items(result_text)
+    outdated_items = extract_outdated_items(result_text)
 
-    return {"result": result_text, "missing": missing_items}
+    return {"result": result_text, "missing": missing_items, "outdated": outdated_items}
 
 
 if __name__ == "__main__":
